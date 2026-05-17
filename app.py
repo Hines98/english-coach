@@ -15,28 +15,62 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ─── CSS ──────────────────────────────────────────────────────────────────────
+# ─── Wake Lock + CSS ───────────────────────────────────────────────────────────
 st.markdown("""
+<script>
+// Wake Lock API — keeps screen on while app is open (Chrome/Android)
+(async () => {
+  if ('wakeLock' in navigator) {
+    let wakeLock = null;
+    const requestWakeLock = async () => {
+      try {
+        wakeLock = await navigator.wakeLock.request('screen');
+      } catch (err) {
+        console.log('Wake Lock not available:', err);
+      }
+    };
+    await requestWakeLock();
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible') {
+        await requestWakeLock();
+      }
+    });
+  }
+})();
+</script>
+
 <style>
     .main { max-width: 720px; }
-    .correction-box {
+    .transcript-pill {
+        background: #E6F1FB;
+        border: 1px solid #B5D4F4;
+        border-radius: 10px;
+        padding: 8px 14px;
+        font-size: 14px;
+        color: #042C53;
+        margin: 6px 0;
+        display: block;
+    }
+    .correction-text {
         background: #FAEEDA;
         border: 1px solid #FAC775;
         border-radius: 10px;
-        padding: 12px 16px;
-        margin-top: 8px;
-    }
-    .correction-title {
+        padding: 10px 14px;
         font-size: 13px;
-        font-weight: 600;
         color: #633806;
+        margin: 6px 0;
+    }
+    .correction-label {
+        font-size: 11px;
+        font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-        margin-bottom: 10px;
+        color: #633806;
+        margin-bottom: 6px;
     }
-    .wrong { color: #993C1D; text-decoration: line-through; font-size: 14px; }
-    .right { color: #3B6D11; font-weight: 600; font-size: 14px; }
-    .tip  { color: #633806; font-size: 13px; margin-top: 2px; }
+    .wrong { color: #993C1D; text-decoration: line-through; }
+    .right { color: #3B6D11; font-weight: 600; }
+    .tip   { color: #633806; font-size: 12px; }
     .perfect {
         background: #EAF3DE;
         border: 1px solid #C0DD97;
@@ -45,36 +79,26 @@ st.markdown("""
         color: #3B6D11;
         font-weight: 500;
         font-size: 14px;
-        margin-top: 8px;
+        margin: 6px 0;
     }
-    .transcript-pill {
-        background: #E6F1FB;
-        border: 1px solid #B5D4F4;
-        border-radius: 20px;
-        padding: 6px 14px;
-        font-size: 13px;
-        color: #042C53;
-        margin-bottom: 8px;
-        display: inline-block;
-    }
-    div[data-testid="stChatMessage"] { padding: 8px 0; }
+    div[data-testid="stChatMessage"] { padding: 6px 0; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── System prompt ─────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are a friendly English conversation partner for a French speaker at intermediate level. Your role: have a natural, engaging conversation AND correct language mistakes in real time.
+SYSTEM_PROMPT = """You are a friendly English conversation partner for a French speaker at intermediate level.
 
 After each user message, respond in this EXACT format — no deviation:
 
-REPLY: [Your conversational response in English. 2-4 sentences. Warm, curious, ask a follow-up question to keep the dialogue going.]
+REPLY: [Your conversational response in English. 2-4 sentences. Warm, curious, ask a follow-up question.]
 CORRECTIONS: [JSON array of mistakes. Empty array [] if English was perfect.]
 
 JSON format for each correction:
-{"wrong": "exact incorrect phrase", "right": "correct phrase", "tip": "brief explanation in French — specify the type: calque du français, faux ami, faute de conjugaison, mauvaise préposition, article manquant, construction incorrecte, etc."}
+{"wrong": "exact incorrect phrase", "right": "correct phrase", "tip": "brief explanation in French — calque du français, faux ami, faute de conjugaison, mauvaise préposition, article manquant, etc."}
 
-Correct: grammar, wrong tense/conjugation, literal French-to-English translations (calques), false friends, missing/wrong articles, wrong prepositions, unnatural phrasing or word order.
+Correct: grammar, wrong tense/conjugation, literal French-to-English translations (calques), false friends, missing/wrong articles, wrong prepositions, unnatural phrasing.
 Do NOT correct: minor punctuation, capitalization.
-Tone: encouraging, never condescending. If perfect English → say something motivating in REPLY and return [].
+Tone: encouraging. If perfect English → say so in REPLY and return [].
 """
 
 # ─── API clients ───────────────────────────────────────────────────────────────
@@ -140,7 +164,22 @@ def parse_response(full_text: str) -> tuple[str, list]:
     return reply, corrections
 
 
-def render_corrections(corrections: list | None):
+def corrections_to_speech_text(corrections: list) -> str | None:
+    """Convert corrections list to a spoken sentence for TTS."""
+    if not corrections:
+        return None
+    lines = []
+    for c in corrections:
+        lines.append(
+            f"You said: {c.get('wrong', '')}. "
+            f"The correct way is: {c.get('right', '')}. "
+            f"{c.get('tip', '')}"
+        )
+    return " ... ".join(lines)
+
+
+def render_corrections_text(corrections: list | None):
+    """Render corrections as readable text (shown alongside the audio)."""
     if corrections is None:
         return
     if len(corrections) == 0:
@@ -149,17 +188,17 @@ def render_corrections(corrections: list | None):
     items_html = ""
     for i, c in enumerate(corrections):
         sep = "border-top: 1px solid #FAC775; padding-top: 8px; margin-top: 8px;" if i > 0 else ""
-        items_html += f"""
-        <div style="{sep}">
+        items_html += f"""<div style="{sep}">
             <div class="wrong">✗ {c.get('wrong','')}</div>
             <div class="right">✓ {c.get('right','')}</div>
             <div class="tip">💡 {c.get('tip','')}</div>
         </div>"""
     st.markdown(f"""
-    <div class="correction-box">
-        <div class="correction-title">✏️ {len(corrections)} correction{'s' if len(corrections)>1 else ''}</div>
+    <div class="correction-text">
+        <div class="correction-label">✏️ Corrections</div>
         {items_html}
     </div>""", unsafe_allow_html=True)
+
 
 # ─── Session state init ────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
@@ -186,20 +225,42 @@ st.divider()
 
 # ─── Conversation display ──────────────────────────────────────────────────────
 for msg in st.session_state.messages:
+
     if msg["role"] == "user":
         with st.chat_message("user"):
-            st.markdown(f'<span class="transcript-pill">🎤 {msg["text"]}</span>', unsafe_allow_html=True)
+            # User's own recording — réécoute
+            if msg.get("user_audio"):
+                st.caption("🎤 Ta note vocale")
+                st.audio(msg["user_audio"], format="audio/wav")
+            # Transcription
+            st.markdown(
+                f'<div class="transcript-pill">📝 {msg["text"]}</div>',
+                unsafe_allow_html=True
+            )
+
     else:
         with st.chat_message("assistant"):
+            # ── Corrections ──────────────────────────────────────────
+            if msg.get("corrections") is not None:
+                if len(msg["corrections"]) > 0:
+                    st.caption("🟠 Corrections")
+                    st.audio(msg["corr_audio"], format="audio/mp3")
+                    render_corrections_text(msg["corrections"])
+                else:
+                    st.markdown(
+                        '<div class="perfect">✓ No mistakes — perfect English! Keep it up 🎉</div>',
+                        unsafe_allow_html=True
+                    )
+
+            # ── Réponse conversationnelle ─────────────────────────────
+            st.caption("🔵 Réponse")
+            st.audio(msg["reply_audio"], format="audio/mp3")
             st.markdown(msg["reply"])
-            render_corrections(msg.get("corrections"))
-            if msg.get("audio"):
-                st.audio(msg["audio"], format="audio/mp3", autoplay=False)
 
 # ─── Input section ─────────────────────────────────────────────────────────────
 st.divider()
-
 st.markdown("**Appuie sur le micro, parle, rappuie pour envoyer**")
+
 audio_bytes = audio_recorder(
     text="",
     recording_color="#e74c3c",
@@ -225,19 +286,37 @@ if audio_bytes and len(audio_bytes) > 2000:
 
         if user_text:
             st.info(f"🎤 Transcrit : **{user_text}**")
-            with st.spinner("Analyse, correction et synthèse vocale..."):
+            with st.spinner("Analyse, corrections et synthèse vocale..."):
                 try:
                     raw = get_coach_response(user_text, st.session_state.history)
                     reply, corrections = parse_response(raw)
-                    tts_audio = text_to_speech(reply)
+
+                    # TTS corrections (only if there are mistakes)
+                    corr_audio = None
+                    corr_speech = corrections_to_speech_text(corrections)
+                    if corr_speech:
+                        corr_audio = text_to_speech(corr_speech)
+
+                    # TTS reply
+                    reply_audio = text_to_speech(reply)
 
                     st.session_state.history += [
                         {"role": "user",      "content": user_text},
                         {"role": "assistant", "content": raw},
                     ]
                     st.session_state.messages += [
-                        {"role": "user",      "text": user_text},
-                        {"role": "assistant", "reply": reply, "corrections": corrections, "audio": tts_audio},
+                        {
+                            "role":       "user",
+                            "text":       user_text,
+                            "user_audio": audio_bytes,
+                        },
+                        {
+                            "role":        "assistant",
+                            "reply":       reply,
+                            "corrections": corrections,
+                            "corr_audio":  corr_audio,
+                            "reply_audio": reply_audio,
+                        },
                     ]
                     st.session_state.audio_key += 1
                     st.rerun()
@@ -254,19 +333,35 @@ with st.expander("✏️ Ou tape en anglais (mode texte)"):
 
     if send and text_input.strip():
         user_text = text_input.strip()
-        with st.spinner("Analyse, correction et synthèse vocale..."):
+        with st.spinner("Analyse, corrections et synthèse vocale..."):
             try:
                 raw = get_coach_response(user_text, st.session_state.history)
                 reply, corrections = parse_response(raw)
-                tts_audio = text_to_speech(reply)
+
+                corr_audio = None
+                corr_speech = corrections_to_speech_text(corrections)
+                if corr_speech:
+                    corr_audio = text_to_speech(corr_speech)
+
+                reply_audio = text_to_speech(reply)
 
                 st.session_state.history += [
                     {"role": "user",      "content": user_text},
                     {"role": "assistant", "content": raw},
                 ]
                 st.session_state.messages += [
-                    {"role": "user",      "text": user_text},
-                    {"role": "assistant", "reply": reply, "corrections": corrections, "audio": tts_audio},
+                    {
+                        "role":       "user",
+                        "text":       user_text,
+                        "user_audio": None,
+                    },
+                    {
+                        "role":        "assistant",
+                        "reply":       reply,
+                        "corrections": corrections,
+                        "corr_audio":  corr_audio,
+                        "reply_audio": reply_audio,
+                    },
                 ]
                 st.rerun()
             except Exception as e:
