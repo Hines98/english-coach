@@ -88,7 +88,6 @@ def get_openai():
 
 # ─── Core functions ────────────────────────────────────────────────────────────
 def transcribe_audio(audio_bytes: bytes) -> str:
-    """Transcribe audio bytes via OpenAI Whisper."""
     client = get_openai()
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(audio_bytes)
@@ -106,8 +105,17 @@ def transcribe_audio(audio_bytes: bytes) -> str:
         os.unlink(tmp_path)
 
 
+def text_to_speech(text: str) -> bytes:
+    client = get_openai()
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="alloy",
+        input=text,
+    )
+    return response.content
+
+
 def get_coach_response(user_text: str, history: list) -> str:
-    """Send message to Claude and get coaching response."""
     client = get_anthropic()
     messages = history + [{"role": "user", "content": user_text}]
     response = client.messages.create(
@@ -120,10 +128,8 @@ def get_coach_response(user_text: str, history: list) -> str:
 
 
 def parse_response(full_text: str) -> tuple[str, list]:
-    """Extract REPLY and CORRECTIONS from Claude's response."""
     reply_match = re.search(r"REPLY:\s*(.*?)(?=\nCORRECTIONS:|$)", full_text, re.DOTALL)
     corr_match  = re.search(r"CORRECTIONS:\s*([\s\S]*)", full_text)
-
     reply = reply_match.group(1).strip() if reply_match else full_text
     corrections = []
     if corr_match:
@@ -135,13 +141,11 @@ def parse_response(full_text: str) -> tuple[str, list]:
 
 
 def render_corrections(corrections: list | None):
-    """Render the correction box below an AI message."""
     if corrections is None:
         return
     if len(corrections) == 0:
         st.markdown('<div class="perfect">✓ No mistakes — perfect English! Keep it up 🎉</div>', unsafe_allow_html=True)
         return
-
     items_html = ""
     for i, c in enumerate(corrections):
         sep = "border-top: 1px solid #FAC775; padding-top: 8px; margin-top: 8px;" if i > 0 else ""
@@ -151,7 +155,6 @@ def render_corrections(corrections: list | None):
             <div class="right">✓ {c.get('right','')}</div>
             <div class="tip">💡 {c.get('tip','')}</div>
         </div>"""
-
     st.markdown(f"""
     <div class="correction-box">
         <div class="correction-title">✏️ {len(corrections)} correction{'s' if len(corrections)>1 else ''}</div>
@@ -160,11 +163,13 @@ def render_corrections(corrections: list | None):
 
 # ─── Session state init ────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
-    st.session_state.messages = []          # displayed messages
+    st.session_state.messages = []
 if "history" not in st.session_state:
-    st.session_state.history = []           # raw API history
+    st.session_state.history = []
 if "last_audio_hash" not in st.session_state:
     st.session_state.last_audio_hash = None
+if "audio_key" not in st.session_state:
+    st.session_state.audio_key = 0
 
 # ─── Header ────────────────────────────────────────────────────────────────────
 st.title("🎙️ English Coach")
@@ -174,6 +179,7 @@ if st.button("🗑️ Nouvelle conversation", use_container_width=False):
     st.session_state.messages = []
     st.session_state.history  = []
     st.session_state.last_audio_hash = None
+    st.session_state.audio_key = 0
     st.rerun()
 
 st.divider()
@@ -187,11 +193,12 @@ for msg in st.session_state.messages:
         with st.chat_message("assistant"):
             st.markdown(msg["reply"])
             render_corrections(msg.get("corrections"))
+            if msg.get("audio"):
+                st.audio(msg["audio"], format="audio/mp3", autoplay=False)
 
 # ─── Input section ─────────────────────────────────────────────────────────────
 st.divider()
 
-# Voice recording
 st.markdown("**Appuie sur le micro, parle, rappuie pour envoyer**")
 audio_bytes = audio_recorder(
     text="",
@@ -201,6 +208,7 @@ audio_bytes = audio_recorder(
     icon_size="3x",
     pause_threshold=2.5,
     sample_rate=16_000,
+    key=f"audio_{st.session_state.audio_key}",
 )
 
 if audio_bytes and len(audio_bytes) > 2000:
@@ -217,10 +225,11 @@ if audio_bytes and len(audio_bytes) > 2000:
 
         if user_text:
             st.info(f"🎤 Transcrit : **{user_text}**")
-            with st.spinner("Analyse et correction..."):
+            with st.spinner("Analyse, correction et synthèse vocale..."):
                 try:
                     raw = get_coach_response(user_text, st.session_state.history)
                     reply, corrections = parse_response(raw)
+                    tts_audio = text_to_speech(reply)
 
                     st.session_state.history += [
                         {"role": "user",      "content": user_text},
@@ -228,13 +237,14 @@ if audio_bytes and len(audio_bytes) > 2000:
                     ]
                     st.session_state.messages += [
                         {"role": "user",      "text": user_text},
-                        {"role": "assistant", "reply": reply, "corrections": corrections},
+                        {"role": "assistant", "reply": reply, "corrections": corrections, "audio": tts_audio},
                     ]
+                    st.session_state.audio_key += 1
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Erreur API Claude : {e}")
+                    st.error(f"Erreur : {e}")
 
-# Text fallback
+# ─── Text fallback ─────────────────────────────────────────────────────────────
 with st.expander("✏️ Ou tape en anglais (mode texte)"):
     col1, col2 = st.columns([5, 1])
     with col1:
@@ -244,18 +254,20 @@ with st.expander("✏️ Ou tape en anglais (mode texte)"):
 
     if send and text_input.strip():
         user_text = text_input.strip()
-        with st.spinner("Analyse et correction..."):
+        with st.spinner("Analyse, correction et synthèse vocale..."):
             try:
                 raw = get_coach_response(user_text, st.session_state.history)
                 reply, corrections = parse_response(raw)
+                tts_audio = text_to_speech(reply)
+
                 st.session_state.history += [
                     {"role": "user",      "content": user_text},
                     {"role": "assistant", "content": raw},
                 ]
                 st.session_state.messages += [
                     {"role": "user",      "text": user_text},
-                    {"role": "assistant", "reply": reply, "corrections": corrections},
+                    {"role": "assistant", "reply": reply, "corrections": corrections, "audio": tts_audio},
                 ]
                 st.rerun()
             except Exception as e:
-                st.error(f"Erreur API Claude : {e}")
+                st.error(f"Erreur : {e}")
