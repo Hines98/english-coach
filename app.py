@@ -131,7 +131,7 @@ def db_save_message(conv_id: str, role: str, text: str, reply: str = None, corre
     db_update_conversation(conv_id)
 
 def db_load_conversations() -> list:
-    res = get_supabase().table("conversations").select("*").order("updated_at", desc=True, nullsfirst=False).execute()
+    res = get_supabase().table("conversations").select("*").order("updated_at", desc=True).execute()
     return res.data
 
 def db_load_messages(conv_id: str) -> list:
