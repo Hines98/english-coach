@@ -105,9 +105,10 @@ def get_anthropic():
 def get_openai():
     return openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-@st.cache_resource
 def get_supabase():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+    url = st.secrets["SUPABASE_URL"].rstrip("/")
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
 # ─── Supabase helpers ──────────────────────────────────────────────────────────
 def db_create_conversation(title: str) -> str:
