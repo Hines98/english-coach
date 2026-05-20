@@ -309,6 +309,9 @@ else:
 
     st.divider()
 
+    if st.session_state.get("db_error"):
+        st.error(f"⚠️ Erreur sauvegarde : {st.session_state.pop('db_error')}")
+
     for msg in st.session_state.messages:
         if msg["role"] == "user":
             with st.chat_message("user"):
@@ -380,7 +383,7 @@ else:
                             db_save_message(conv_id, "user", user_text)
                             db_save_message(conv_id, "assistant", reply, reply=reply, corrections=corrections)
                         except Exception as e:
-                            st.warning(f"Sauvegarde échouée (conversation non enregistrée) : {e}")
+                            st.session_state["db_error"] = str(e)
 
                         st.session_state.history += [
                             {"role": "user", "content": user_text},
