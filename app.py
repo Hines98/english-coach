@@ -86,8 +86,8 @@ def get_openai():
     return openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # ─── Supabase REST helpers ─────────────────────────────────────────────────────
-def sb_headers():
-    key = st.secrets["SUPABASE_KEY"]
+def sb_headers(write=False):
+    key = st.secrets["SUPABASE_SERVICE_KEY"] if write else st.secrets["SUPABASE_KEY"]
     return {
         "apikey": key,
         "Authorization": f"Bearer {key}",
@@ -101,7 +101,7 @@ def sb_url(path: str) -> str:
 
 def db_create_conversation(title: str) -> str:
     conv_id = str(uuid.uuid4())
-    h = {**sb_headers(), "Prefer": "return=minimal"}
+    h = {**sb_headers(write=True), "Prefer": "return=minimal"}
     res = requests.post(sb_url("conversations"), headers=h, json={"id": conv_id, "title": title})
     if not res.ok:
         raise Exception(f"HTTP {res.status_code} — {res.text}")
@@ -109,7 +109,7 @@ def db_create_conversation(title: str) -> str:
 
 def db_update_conversation(conv_id: str):
     from datetime import datetime, timezone
-    h = {**sb_headers(), "Prefer": "return=minimal"}
+    h = {**sb_headers(write=True), "Prefer": "return=minimal"}
     requests.patch(
         sb_url(f"conversations?id=eq.{conv_id}"),
         headers=h,
@@ -117,7 +117,7 @@ def db_update_conversation(conv_id: str):
     )
 
 def db_save_message(conv_id: str, role: str, text: str, reply: str = None, corrections: list = None):
-    h = {**sb_headers(), "Prefer": "return=minimal"}
+    h = {**sb_headers(write=True), "Prefer": "return=minimal"}
     res = requests.post(
         sb_url("messages"), headers=h,
         json={
