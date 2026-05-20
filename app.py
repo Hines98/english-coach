@@ -5,6 +5,7 @@ import json
 import re
 import tempfile
 import os
+import uuid
 import requests
 from audio_recorder_streamlit import audio_recorder
 
@@ -99,25 +100,24 @@ def sb_url(path: str) -> str:
     return f"{base}/rest/v1/{path}"
 
 def db_create_conversation(title: str) -> str:
-    res = requests.post(
-        sb_url("conversations"),
-        headers=sb_headers(),
-        json={"title": title},
-    )
-    return res.json()[0]["id"]
+    conv_id = str(uuid.uuid4())
+    h = {**sb_headers(), "Prefer": "return=minimal"}
+    requests.post(sb_url("conversations"), headers=h, json={"id": conv_id, "title": title})
+    return conv_id
 
 def db_update_conversation(conv_id: str):
     from datetime import datetime, timezone
+    h = {**sb_headers(), "Prefer": "return=minimal"}
     requests.patch(
         sb_url(f"conversations?id=eq.{conv_id}"),
-        headers=sb_headers(),
+        headers=h,
         json={"updated_at": datetime.now(timezone.utc).isoformat()},
     )
 
 def db_save_message(conv_id: str, role: str, text: str, reply: str = None, corrections: list = None):
+    h = {**sb_headers(), "Prefer": "return=minimal"}
     requests.post(
-        sb_url("messages"),
-        headers=sb_headers(),
+        sb_url("messages"), headers=h,
         json={
             "conversation_id": conv_id,
             "role":            role,
@@ -354,18 +354,29 @@ else:
                 with st.spinner("Analyse, corrections et synthèse vocale..."):
                     try:
                         raw = get_coach_response(user_text, st.session_state.history)
-                        reply, corrections = parse_response(raw)
-                        corr_audio  = text_to_speech(corrections_to_speech(corrections)) if corrections else None
-                        reply_audio = text_to_speech(reply)
+                    except Exception as e:
+                        st.error(f"Erreur Claude : {e}")
+                        raw = None
 
-                        if st.session_state.conversation_id is None:
-                            conv_id = db_create_conversation(user_text[:60])
-                            st.session_state.conversation_id = conv_id
-                        else:
-                            conv_id = st.session_state.conversation_id
+                    if raw:
+                        try:
+                            reply, corrections = parse_response(raw)
+                            corr_audio  = text_to_speech(corrections_to_speech(corrections)) if corrections else None
+                            reply_audio = text_to_speech(reply)
+                        except Exception as e:
+                            st.error(f"Erreur TTS : {e}")
+                            reply, corrections, corr_audio, reply_audio = raw, [], None, None
 
-                        db_save_message(conv_id, "user", user_text)
-                        db_save_message(conv_id, "assistant", reply, reply=reply, corrections=corrections)
+                        try:
+                            if st.session_state.conversation_id is None:
+                                conv_id = db_create_conversation(user_text[:60])
+                                st.session_state.conversation_id = conv_id
+                            else:
+                                conv_id = st.session_state.conversation_id
+                            db_save_message(conv_id, "user", user_text)
+                            db_save_message(conv_id, "assistant", reply, reply=reply, corrections=corrections)
+                        except Exception as e:
+                            st.warning(f"Sauvegarde échouée (conversation non enregistrée) : {e}")
 
                         st.session_state.history += [
                             {"role": "user", "content": user_text},
@@ -378,8 +389,6 @@ else:
                         ]
                         st.session_state.audio_key += 1
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Erreur : {e}")
 
     with st.expander("✏️ Ou tape en anglais (mode texte)"):
         col1, col2 = st.columns([5, 1])
