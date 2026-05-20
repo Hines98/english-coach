@@ -5,8 +5,8 @@ import json
 import re
 import tempfile
 import os
+import requests
 from audio_recorder_streamlit import audio_recorder
-from supabase import create_client
 
 # ─── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -34,40 +34,19 @@ st.markdown("""
 </script>
 <style>
   .main { max-width: 720px; }
-  .conv-card {
-    background: var(--background-color);
-    border: 1px solid #e0e0e0;
-    border-radius: 10px;
-    padding: 12px 16px;
-    margin-bottom: 8px;
-    cursor: pointer;
-    transition: border-color 0.2s;
-  }
-  .conv-title { font-weight: 500; font-size: 15px; }
-  .conv-date  { font-size: 12px; color: #888; margin-top: 2px; }
   .transcript-pill {
-    background: #E6F1FB;
-    border: 1px solid #B5D4F4;
-    border-radius: 10px;
-    padding: 8px 14px;
-    font-size: 14px;
-    color: #042C53;
-    margin: 6px 0;
-    display: block;
+    background: #E6F1FB; border: 1px solid #B5D4F4;
+    border-radius: 10px; padding: 8px 14px;
+    font-size: 14px; color: #042C53; margin: 6px 0; display: block;
   }
   .correction-text {
-    background: #FAEEDA;
-    border: 1px solid #FAC775;
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 13px;
-    color: #633806;
-    margin: 6px 0;
+    background: #FAEEDA; border: 1px solid #FAC775;
+    border-radius: 10px; padding: 10px 14px;
+    font-size: 13px; color: #633806; margin: 6px 0;
   }
   .correction-label {
-    font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.05em;
-    color: #633806; margin-bottom: 6px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #633806; margin-bottom: 6px;
   }
   .wrong { color: #993C1D; text-decoration: line-through; }
   .right { color: #3B6D11; font-weight: 600; }
@@ -105,44 +84,69 @@ def get_anthropic():
 def get_openai():
     return openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-def get_supabase():
-    url = st.secrets["SUPABASE_URL"].rstrip("/")
+# ─── Supabase REST helpers ─────────────────────────────────────────────────────
+def sb_headers():
     key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
 
-# ─── Supabase helpers ──────────────────────────────────────────────────────────
+def sb_url(path: str) -> str:
+    base = st.secrets["SUPABASE_URL"].rstrip("/")
+    return f"{base}/rest/v1/{path}"
+
 def db_create_conversation(title: str) -> str:
-    res = get_supabase().table("conversations").insert({"title": title}).execute()
-    return res.data[0]["id"]
+    res = requests.post(
+        sb_url("conversations"),
+        headers=sb_headers(),
+        json={"title": title},
+    )
+    return res.json()[0]["id"]
 
 def db_update_conversation(conv_id: str):
     from datetime import datetime, timezone
-    get_supabase().table("conversations").update(
-        {"updated_at": datetime.now(timezone.utc).isoformat()}
-    ).eq("id", conv_id).execute()
+    requests.patch(
+        sb_url(f"conversations?id=eq.{conv_id}"),
+        headers=sb_headers(),
+        json={"updated_at": datetime.now(timezone.utc).isoformat()},
+    )
 
 def db_save_message(conv_id: str, role: str, text: str, reply: str = None, corrections: list = None):
-    get_supabase().table("messages").insert({
-        "conversation_id": conv_id,
-        "role":            role,
-        "text":            text,
-        "reply":           reply,
-        "corrections":     json.dumps(corrections) if corrections is not None else None,
-    }).execute()
+    requests.post(
+        sb_url("messages"),
+        headers=sb_headers(),
+        json={
+            "conversation_id": conv_id,
+            "role":            role,
+            "text":            text,
+            "reply":           reply,
+            "corrections":     json.dumps(corrections) if corrections is not None else None,
+        },
+    )
     db_update_conversation(conv_id)
 
 def db_load_conversations() -> list:
-    res = get_supabase().table("conversations").select("*").order("updated_at", desc=True).execute()
-    return res.data
+    res = requests.get(
+        sb_url("conversations?order=updated_at.desc"),
+        headers=sb_headers(),
+    )
+    return res.json() if res.ok else []
 
 def db_load_messages(conv_id: str) -> list:
-    res = get_supabase().table("messages").select("*").eq(
-        "conversation_id", conv_id
-    ).order("created_at").execute()
-    return res.data
+    res = requests.get(
+        sb_url(f"messages?conversation_id=eq.{conv_id}&order=created_at.asc"),
+        headers=sb_headers(),
+    )
+    return res.json() if res.ok else []
 
 def db_delete_conversation(conv_id: str):
-    get_supabase().table("conversations").delete().eq("id", conv_id).execute()
+    requests.delete(
+        sb_url(f"conversations?id=eq.{conv_id}"),
+        headers=sb_headers(),
+    )
 
 # ─── AI helpers ────────────────────────────────────────────────────────────────
 def transcribe_audio(audio_bytes: bytes) -> str:
@@ -193,7 +197,6 @@ def corrections_to_speech(corrections: list) -> str | None:
     ]
     return " ... ".join(lines)
 
-# ─── Render helpers ────────────────────────────────────────────────────────────
 def render_corrections_text(corrections):
     if corrections is None:
         return
@@ -213,22 +216,22 @@ def render_corrections_text(corrections):
     </div>""", unsafe_allow_html=True)
 
 def format_date(iso_str: str) -> str:
-    from datetime import datetime, timezone
+    from datetime import datetime
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         return dt.strftime("%d/%m/%Y à %H:%M")
     except Exception:
         return iso_str
 
-# ─── Session state init ────────────────────────────────────────────────────────
+# ─── Session state ─────────────────────────────────────────────────────────────
 if "view" not in st.session_state:
-    st.session_state.view = "list"          # "list" or "chat"
+    st.session_state.view = "list"
 if "conversation_id" not in st.session_state:
     st.session_state.conversation_id = None
 if "messages" not in st.session_state:
-    st.session_state.messages = []          # in-memory for current session
+    st.session_state.messages = []
 if "history" not in st.session_state:
-    st.session_state.history = []           # API history for Claude
+    st.session_state.history = []
 if "last_audio_hash" not in st.session_state:
     st.session_state.last_audio_hash = None
 if "audio_key" not in st.session_state:
@@ -242,16 +245,14 @@ if st.session_state.view == "list":
     st.caption("Tes conversations")
 
     if st.button("➕ Nouvelle conversation", use_container_width=True, type="primary"):
-        st.session_state.view            = "chat"
-        st.session_state.conversation_id = None
-        st.session_state.messages        = []
-        st.session_state.history         = []
-        st.session_state.last_audio_hash = None
-        st.session_state.audio_key       = 0
+        st.session_state.update({
+            "view": "chat", "conversation_id": None,
+            "messages": [], "history": [],
+            "last_audio_hash": None, "audio_key": 0,
+        })
         st.rerun()
 
     st.divider()
-
     conversations = db_load_conversations()
 
     if not conversations:
@@ -262,13 +263,10 @@ if st.session_state.view == "list":
             with col1:
                 if st.button(
                     f"💬 {conv['title']}\n{format_date(conv['updated_at'])}",
-                    key=f"open_{conv['id']}",
-                    use_container_width=True,
+                    key=f"open_{conv['id']}", use_container_width=True,
                 ):
-                    # Load conversation from DB
                     rows = db_load_messages(conv["id"])
-                    messages = []
-                    history  = []
+                    messages, history = [], []
                     for row in rows:
                         if row["role"] == "user":
                             messages.append({"role": "user", "text": row["text"], "user_audio": None})
@@ -276,20 +274,15 @@ if st.session_state.view == "list":
                         else:
                             corr = json.loads(row["corrections"]) if row["corrections"] else []
                             messages.append({
-                                "role":        "assistant",
-                                "reply":       row["reply"] or "",
-                                "corrections": corr,
-                                "corr_audio":  None,
-                                "reply_audio": None,
+                                "role": "assistant", "reply": row["reply"] or "",
+                                "corrections": corr, "corr_audio": None, "reply_audio": None,
                             })
                             history.append({"role": "assistant", "content": row["reply"] or ""})
-
-                    st.session_state.view            = "chat"
-                    st.session_state.conversation_id = conv["id"]
-                    st.session_state.messages        = messages
-                    st.session_state.history         = history
-                    st.session_state.last_audio_hash = None
-                    st.session_state.audio_key       = 0
+                    st.session_state.update({
+                        "view": "chat", "conversation_id": conv["id"],
+                        "messages": messages, "history": history,
+                        "last_audio_hash": None, "audio_key": 0,
+                    })
                     st.rerun()
             with col2:
                 if st.button("🗑️", key=f"del_{conv['id']}", help="Supprimer"):
@@ -300,7 +293,6 @@ if st.session_state.view == "list":
 # VIEW : CHAT
 # ══════════════════════════════════════════════════════════════════════════════
 else:
-    # Header
     col1, col2 = st.columns([1, 6])
     with col1:
         if st.button("← Retour"):
@@ -313,7 +305,6 @@ else:
 
     st.divider()
 
-    # Conversation display
     for msg in st.session_state.messages:
         if msg["role"] == "user":
             with st.chat_message("user"):
@@ -364,28 +355,24 @@ else:
                     try:
                         raw = get_coach_response(user_text, st.session_state.history)
                         reply, corrections = parse_response(raw)
-
                         corr_audio  = text_to_speech(corrections_to_speech(corrections)) if corrections else None
                         reply_audio = text_to_speech(reply)
 
-                        # Create conversation on first message
                         if st.session_state.conversation_id is None:
                             conv_id = db_create_conversation(user_text[:60])
                             st.session_state.conversation_id = conv_id
                         else:
                             conv_id = st.session_state.conversation_id
 
-                        # Save to DB
                         db_save_message(conv_id, "user", user_text)
                         db_save_message(conv_id, "assistant", reply, reply=reply, corrections=corrections)
 
-                        # Update in-memory state
                         st.session_state.history += [
-                            {"role": "user",      "content": user_text},
+                            {"role": "user", "content": user_text},
                             {"role": "assistant", "content": raw},
                         ]
                         st.session_state.messages += [
-                            {"role": "user",      "text": user_text, "user_audio": audio_bytes},
+                            {"role": "user", "text": user_text, "user_audio": audio_bytes},
                             {"role": "assistant", "reply": reply, "corrections": corrections,
                              "corr_audio": corr_audio, "reply_audio": reply_audio},
                         ]
@@ -394,7 +381,6 @@ else:
                     except Exception as e:
                         st.error(f"Erreur : {e}")
 
-    # Text fallback
     with st.expander("✏️ Ou tape en anglais (mode texte)"):
         col1, col2 = st.columns([5, 1])
         with col1:
@@ -408,7 +394,6 @@ else:
                 try:
                     raw = get_coach_response(user_text, st.session_state.history)
                     reply, corrections = parse_response(raw)
-
                     corr_audio  = text_to_speech(corrections_to_speech(corrections)) if corrections else None
                     reply_audio = text_to_speech(reply)
 
@@ -422,11 +407,11 @@ else:
                     db_save_message(conv_id, "assistant", reply, reply=reply, corrections=corrections)
 
                     st.session_state.history += [
-                        {"role": "user",      "content": user_text},
+                        {"role": "user", "content": user_text},
                         {"role": "assistant", "content": raw},
                     ]
                     st.session_state.messages += [
-                        {"role": "user",      "text": user_text, "user_audio": None},
+                        {"role": "user", "text": user_text, "user_audio": None},
                         {"role": "assistant", "reply": reply, "corrections": corrections,
                          "corr_audio": corr_audio, "reply_audio": reply_audio},
                     ]
