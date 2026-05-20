@@ -104,9 +104,10 @@ def sb_url(path: str) -> str:
 def db_create_conversation(title: str) -> str:
     conv_id = str(uuid.uuid4())
     h = {**sb_headers(write=True), "Prefer": "return=minimal"}
-    res = requests.post(sb_url("conversations"), headers=h, json={"id": conv_id, "title": title})
+    url = sb_url("conversations")
+    res = requests.post(url, headers=h, json={"id": conv_id, "title": title})
     if not res.ok:
-        raise Exception(f"HTTP {res.status_code} — {res.text}")
+        raise Exception(f"URL={url} | HTTP {res.status_code} — {res.text}")
     return conv_id
 
 def db_update_conversation(conv_id: str):
