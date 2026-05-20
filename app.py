@@ -102,7 +102,9 @@ def sb_url(path: str) -> str:
 def db_create_conversation(title: str) -> str:
     conv_id = str(uuid.uuid4())
     h = {**sb_headers(), "Prefer": "return=minimal"}
-    requests.post(sb_url("conversations"), headers=h, json={"id": conv_id, "title": title})
+    res = requests.post(sb_url("conversations"), headers=h, json={"id": conv_id, "title": title})
+    if not res.ok:
+        raise Exception(f"HTTP {res.status_code} — {res.text}")
     return conv_id
 
 def db_update_conversation(conv_id: str):
@@ -116,7 +118,7 @@ def db_update_conversation(conv_id: str):
 
 def db_save_message(conv_id: str, role: str, text: str, reply: str = None, corrections: list = None):
     h = {**sb_headers(), "Prefer": "return=minimal"}
-    requests.post(
+    res = requests.post(
         sb_url("messages"), headers=h,
         json={
             "conversation_id": conv_id,
@@ -126,6 +128,8 @@ def db_save_message(conv_id: str, role: str, text: str, reply: str = None, corre
             "corrections":     json.dumps(corrections) if corrections is not None else None,
         },
     )
+    if not res.ok:
+        raise Exception(f"HTTP {res.status_code} — {res.text}")
     db_update_conversation(conv_id)
 
 def db_load_conversations() -> list:
