@@ -87,12 +87,14 @@ def get_openai():
 
 # ─── Supabase REST helpers ─────────────────────────────────────────────────────
 def sb_headers(write=False):
-    key = st.secrets["SUPABASE_SERVICE_KEY"] if write else st.secrets["SUPABASE_KEY"]
+    anon_key     = st.secrets["SUPABASE_KEY"]
+    service_key  = st.secrets["SUPABASE_SERVICE_KEY"]
+    auth_key     = service_key if write else anon_key
     return {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
+        "apikey":        anon_key,
+        "Authorization": f"Bearer {auth_key}",
+        "Content-Type":  "application/json",
+        "Prefer":        "return=representation",
     }
 
 def sb_url(path: str) -> str:
