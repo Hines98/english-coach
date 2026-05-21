@@ -98,7 +98,7 @@ def sb_headers(write=False):
     }
 
 def sb_url(path: str) -> str:
-    base = st.secrets["SUPABASE_URL"].rstrip("/")
+    base = st.secrets["SUPABASE_URL"].rstrip("/").removesuffix("/rest/v1")
     return f"{base}/rest/v1/{path}"
 
 def db_create_conversation(title: str) -> str:
